@@ -33,6 +33,8 @@ namespace TommyVoice
         private readonly string _claudeModel = _env.GetValueOrDefault("CLAUDE_MODEL", "claude-sonnet-4-6");
         private readonly int _claudeMaxTokens = int.Parse(_env.GetValueOrDefault("CLAUDE_MAX_TOKENS", "2048"));
         private readonly string _deepgramKey = _env.GetValueOrDefault("DEEPGRAM_API_KEY", "");
+        private readonly string _elevenLabsKey = _env.GetValueOrDefault("ELEVENLABS_API_KEY", "");
+        private readonly string _elevenLabsVoiceId = _env.GetValueOrDefault("ELEVENLABS_VOICE_ID", "");
 
         private readonly string _systemPrompt;
 
@@ -90,6 +92,7 @@ namespace TommyVoice
                 var response = await AskClaude(transcription);
                 ConversationBox.Text = "Toi : " + transcription + "\n\nTommy : " + response;
                 StatusLabel.Text = "Transcription terminée";
+                await SpeakAsync(response);
             }
         }
         private async Task<string> TranscribeAudio(string audioPath)
@@ -169,5 +172,50 @@ namespace TommyVoice
                 return "Erreur : " + ex.Message;
             }
         }
+
+        private async Task SpeakAsync(string text)
+        {
+            try
+            {
+                var body = JsonSerializer.Serialize(new
+                {
+                    text = text,
+                    model_id = "eleven_multilingual_v2"
+                });
+                var content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                var request = new HttpRequestMessage(HttpMethod.Post,
+                    $"https://api.elevenlabs.io/v1/text-to-speech/{_elevenLabsVoiceId}");
+                request.Headers.Add("xi-api-key", _elevenLabsKey);
+                request.Content = content;
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var error = await response.Content.ReadAsStringAsync();
+                    StatusLabel.Text = "Erreur ElevenLabs : " + error;
+                    return;
+                }
+
+                var audioBytes = await response.Content.ReadAsByteArrayAsync();
+
+                var tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tommy_output.mp3");
+                await File.WriteAllBytesAsync(tempFile, audioBytes);
+
+                using var reader = new NAudio.Wave.Mp3FileReader(tempFile);
+                using var waveOut = new NAudio.Wave.WaveOutEvent();
+                waveOut.Init(reader);
+                waveOut.Play();
+                while (waveOut.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+                    await Task.Delay(100);
+            }
+            catch (Exception ex)
+            {
+                StatusLabel.Text = "Erreur TTS : " + ex.Message;
+            }
+        }
+
+
     }
 }
