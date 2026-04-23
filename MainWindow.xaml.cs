@@ -100,14 +100,29 @@ namespace TommyVoice
                 _conversationHistory.Add(new { role = "user", content = transcription });
                 _memory.SaveHistory(_conversationHistory);
 
-                var response = await _claude.AskAsync(_systemPrompt, _conversationHistory);
+                ConversationBox.Text = "Toi : " + transcription + "\n\nTommy : ";
+                StatusLabel.Text = "Tommy répond...";
+
+                var fullResponse = new System.Text.StringBuilder();
+
+                async IAsyncEnumerable<string> StreamAndCapture()
+                {
+                    await foreach (var chunk in _claude.AskStreamingAsync(_systemPrompt, _conversationHistory))
+                    {
+                        fullResponse.Append(chunk);
+                        var snapshot = fullResponse.ToString();
+                        _ = Dispatcher.InvokeAsync(() => ConversationBox.Text = "Toi : " + transcription + "\n\nTommy : " + snapshot);
+                        yield return chunk;
+                    }
+                }
+
+                await _elevenlabs.SpeakStreamingAsync(StreamAndCapture());
+
+                var response = fullResponse.ToString();
                 _conversationHistory.Add(new { role = "assistant", content = response });
                 _memory.SaveHistory(_conversationHistory);
-
-                ConversationBox.Text = "Toi : " + transcription + "\n\nTommy : " + response;
                 StatusLabel.Text = "Prêt";
 
-                await _elevenlabs.SpeakAsync(response);
             }
         }
     }
