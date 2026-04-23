@@ -29,16 +29,22 @@ namespace TommyVoice
         private static readonly Dictionary<string, string> _env = LoadEnv(
         @"C:\Users\Jack Darius\Documents\IA\TOMMY\.env");
 
-        private readonly string _openAiKey = _env.GetValueOrDefault("OPENAI_API_KEY", "");
         private readonly string _anthropicKey = _env.GetValueOrDefault("ANTHROPIC_API_KEY", "");
         private readonly string _claudeModel = _env.GetValueOrDefault("CLAUDE_MODEL", "claude-sonnet-4-6");
         private readonly int _claudeMaxTokens = int.Parse(_env.GetValueOrDefault("CLAUDE_MAX_TOKENS", "2048"));
-        private readonly string _systemPrompt = System.IO.File.ReadAllText(@"C:\Users\Jack Darius\Documents\IA\TOMMY\memory\identity.md");
+        private readonly string _deepgramKey = _env.GetValueOrDefault("DEEPGRAM_API_KEY", "");
+
+        private readonly string _systemPrompt;
+
+        private List<object> _conversationHistory = new List<object>();
 
 
         public MainWindow()
         {
             InitializeComponent();
+            var claudeMd = System.IO.File.ReadAllText(@"C:\Users\Jack Darius\Documents\IA\TOMMY\CLAUDE.md");
+            var identityMd = System.IO.File.ReadAllText(@"C:\Users\Jack Darius\Documents\IA\TOMMY\memory\identity.md");
+            _systemPrompt = claudeMd + "\n\n---\n\n" + identityMd;
         }
 
         private static Dictionary<string, string> LoadEnv(string path)
@@ -90,44 +96,48 @@ namespace TommyVoice
         {
             try
             {
-                using var form = new MultipartFormDataContent();
-                using var fileStream = File.OpenRead(audioPath);
-                using var fileContent = new StreamContent(fileStream);
+                var audioBytes = File.ReadAllBytes(audioPath);
+                var content = new ByteArrayContent(audioBytes);
+                content.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
 
-                fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+                var request = new HttpRequestMessage(HttpMethod.Post,
+                    "https://api.deepgram.com/v1/listen?model=nova-2&language=fr");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Token", _deepgramKey);
+                request.Content = content;
 
-                form.Add(fileContent, "file", "audio.wav");
-                form.Add(new StringContent("whisper-1"), "model");
-                form.Add(new StringContent("fr"), "language");
-
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiKey);
-
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/audio/transcriptions", form);
-
+                var response = await _httpClient.SendAsync(request);
                 var json = await response.Content.ReadAsStringAsync();
                 var doc = JsonDocument.Parse(json);
-                return doc.RootElement.GetProperty("text").GetString() ?? "";
+                return doc.RootElement
+                    .GetProperty("results")
+                    .GetProperty("channels")[0]
+                    .GetProperty("alternatives")[0]
+                    .GetProperty("transcript")
+                    .GetString() ?? "";
             }
             catch (Exception ex)
             {
-                return "";
+                return "Erreur transcription : " + ex.Message;
             }
         }
+
         private async Task<string> AskClaude(string userMessage)
         {
             try
             {
+                // 1. Ajouter le message utilisateur à l'historique
+                _conversationHistory.Add(new { role = "user", content = userMessage });
+
+                // 2. Construire la requête avec tout l'historique
                 var requestBody = new
                 {
-                    model = "claude-sonnet-4-6",
+                    model = _claudeModel,
                     max_tokens = _claudeMaxTokens,
                     system = _systemPrompt,
-                    messages = new[]
-                    {
-                        new { role = "user", content = userMessage }
-                    }
+                    messages = _conversationHistory.ToArray()
                 };
 
+                // 3. ... envoyer la requête ...
                 var json = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
@@ -137,15 +147,21 @@ namespace TommyVoice
                 _httpClient.DefaultRequestHeaders.Accept.Add(
                     new MediaTypeWithQualityHeaderValue("application/json"));
 
+                // 4. Récupérer la réponse
                 var response = await _httpClient.PostAsync(
                     "https://api.anthropic.com/v1/messages", content);
 
                 var responseJson = await response.Content.ReadAsStringAsync();
                 var doc = JsonDocument.Parse(responseJson);
-                return doc.RootElement
+                var reponse = doc.RootElement
                     .GetProperty("content")[0]
                     .GetProperty("text")
                     .GetString() ?? "";
+
+                // 5. Ajouter la réponse de Tommy à l'historique
+                _conversationHistory.Add(new { role = "assistant", content = reponse });
+
+                return reponse;
 
             } 
             catch (Exception ex) 
